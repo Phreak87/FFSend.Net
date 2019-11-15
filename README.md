@@ -18,3 +18,8 @@ Whats not:
 
 Please support and give hints why this is not working.
 (i think its only a small issue with the encryption)
+
+The most knowledge comes from this github-project
+which is not working anymore (because of the socket
+communication instead of Ajax i think):
+https://github.com/shubzghadge/firefoxsenduploader
