@@ -9,364 +9,360 @@ Imports Org.BouncyCastle.Crypto.Modes
 Imports Org.BouncyCastle.Crypto.Engines
 Imports Org.BouncyCastle.Crypto.Parameters
 Imports Org.BouncyCastle.Crypto
+Imports System.Net.NetworkInformation
 
 Module Module1
 
     Sub Main()
         Dim UPL As New FF_Send
-        Dim RES = UPL.Upload("C:\Users\Phreak87\Desktop\Test.txt")
+        Dim RES = UPL.Upload("C:\Test.txt")
+        Console.ReadLine()
     End Sub
 
 End Module
 
-
 Public Class FF_Send
+    Sub New()
+
+    End Sub
 
     Function Upload(Filename As String) As String
+        If My.Computer.FileSystem.FileExists(Filename) = False Then Return "File not Found"
+        Dim SEC As New KeyRing(Nothing, "", "send.firefox.com")
 
-        Dim SEC As New SecretKeys(Nothing, "", "send.firefox.com")
-        Dim CLI1 As New SOC_SEC_Client("wss://send.firefox.com/api/ws")
-
-        CLI1.Connect()
-        SEC.PrintSecrets()
-
-        ' ---------------------------------------------
-        ' Generiere Metadaten-Byte-Array
-        ' ---------------------------------------------
-        Dim Meta As New Dictionary(Of String, String)
-        Meta.Add("iv", B64.unpadded_urlsafe_b64encodeB(SEC.metaIV))
-        Meta.Add("name", Split(Filename, "\")(Split(Filename, "\").Count - 1))
-        Meta.Add("type", "application/octet-stream")
-        Dim Meta1 = JSON.StringDictionaryToJSON(Meta)
-
-        Dim Metadata = Crypto.AES_GCM.EncryptWithKey(System.Text.Encoding.UTF8.GetBytes(Meta1), SEC.metaKey)
-        Dim MetaDigest = Crypto.MD5.MD5Hash(Metadata)
-        Dim MetaEncrypted = BIN.CombineBytes(Metadata, MetaDigest)
+        ' ---------------------------------------------------------------------
+        ' Generiere Metadaten (Test = TestKey + TestSalt + TestMeta [Test.txt])
+        ' (Test) => {"fileMetadata":"hb6dyyP5dMFeYXEBv6sa3YXb0XBHeKFuIt4AGBdJgqFKrBLLfU_V5xh96Ke0rzeX0Y-I7JbSMLElB4aU6UBiqO22TP9EqD93mBuHrNVe1xL-ceWK3kWYaCC72SNUNxTrABFKuP9MQ-PqvQnqAD9yptpHW2JlCxX7DKNcXQk4UfZfs_2gkN9sLw","authorization":"send-v1 Bjb4F24osyrwuu8zeRlc0f0JRMgQbAxtr4rvcbghvlMsxO9r40WNKVooKbfQ_yqJLIZJCQCs7Yy5VJMfl5LapA","timeLimit":86400,"dlimit":1}
+        ' (Gen)  => {"fileMetadata":"hb6dyyP5dMFeYXEBv6sa3YXb0XBHeKFuIt4AGBdJgqFKrBLLfU_V5xh96Ke0rzeX0Y-I7JbSMLElB4aU6UBiqO22TP9EqD93mBuHrNVe1xL-ceWK3kWYaCC72SNUNxTrABFKuP9MQ-PqvQnqAD9yptpHW2JlCxX7DKNcXQk4UfZfs_2gkN9sLw","authorization":"send-v1 Bjb4F24osyrwuu8zeRlc0f0JRMgQbAxtr4rvcbghvlMsxO9r40WNKVooKbfQ_yqJLIZJCQCs7Yy5VJMfl5LapA","timeLimit":86400,"dlimit":1}
+        ' ---------------------------------------------------------------------
         Dim Meta2 As New Dictionary(Of String, Object)
-        Meta2.Add("fileMetadata", B64.unpadded_urlsafe_b64encodeB(MetaEncrypted))
-        Meta2.Add("authorization", "send-v1 " & B64.unpadded_urlsafe_b64encodeB(SEC.authKey))
+        Meta2.Add("fileMetadata", Helper.B64.unpadded_urlsafe_b64encodeB(SEC.EncryptMetaData(Nothing)))
+        Meta2.Add("authorization", "send-v1 " & Helper.B64.unpadded_urlsafe_b64encodeB(SEC.authKey))
         Meta2.Add("timeLimit", 86400)
         Meta2.Add("dlimit", 1)
-        Dim Meta2Enc = JSON.StringDictionaryToJSON(Meta2)
+        Dim Meta2Enc = Helper.JSON.StringDictionaryToJSON(Meta2)
 
-        CLI1.SendText(Meta2Enc) '                                               MetaData
+        Dim CLI1 As New SOC_SEC_Client("wss://send.firefox.com/api/ws")
 
+        ' ---------------------------------------------------------------------
+        ' MetaDaten senden und Antwort abwarten und auslesen (TargetURL)
+        ' ---------------------------------------------------------------------
+        CLI1.SendText(Meta2Enc) '                                               Send MetaData
+        Threading.Thread.Sleep(500) '                                           Let the Server work
         Dim Link As String = CLI1.ReadText '                                    Link extrahieren
         Dim TUrl As String = ExtractLink(Link) '                                Die Target-URL lesen
-        Console.WriteLine(TUrl) '                                               Link-Target
+        Console.WriteLine("Target-ID:" & TUrl) '                                Link-Target
 
-        Dim D1(20) As Byte : D1(0) = 255 : CLI1.SendBin(D1) '                   Send a little Trash (StreamReader Position)
-        Dim D2 As Byte() = My.Computer.FileSystem.ReadAllBytes(Filename) '      Get File-Data
-        CLI1.SendBin(Crypto.AES_GCM.EncryptWithKey(D2, SEC.secretKey))
-        Dim D3(0) As Byte : CLI1.SendBin(D3) '                                  Send End
+        Dim keyHKDF = New Crypto.HKDF()
 
-        Threading.Thread.Sleep(2000)
-        Console.WriteLine(CLI1.ReadText) '                                      Receive OK 
+        ' ---------------------------------------------------------
+        ' BInfo generieren und Terminieren (Len: 16) - OK
+        ' ---------------------------------------------------------
+        Dim BInfo As Byte() = Helper.UTF.UTF8GetBytesTerm("Content-Encoding: aes128gcm") '  Muss terminiert sein !!!
+        Dim HKDFKey As Byte() = keyHKDF.deriveKey(SEC.RawSecret, SEC.Nonce, BInfo, 16)   '  (Test) = 198,11, 99,38, ...     (LEN16)
 
-        Dim TargetURL As String = ("https://send.firefox.com/download/" & TUrl & "/#" & B64.unpadded_urlsafe_b64encodeB(SEC.secretKey))
-        My.Computer.Clipboard.SetText(TargetURL)
+        ' ---------------------------------------------------------
+        ' NonceBase generieren und Terminieren (Len: 12) - OK
+        ' ---------------------------------------------------------
+        Dim BNonce As Byte() = Helper.UTF.UTF8GetBytesTerm("Content-Encoding: nonce") '     Muss terminiert sein !!!
+        Dim NonceBase As Byte() = keyHKDF.deriveKey(SEC.RawSecret, SEC.Nonce, BNonce, 12) ' (Test) = 215, 77, 70, 88, ...   (LEN12)
 
-        Return ""
+        ' ---------------------------------------------------------
+        ' Initialisierung der Datenübertragung - OK (Für Testdaten)
+        ' ---------------------------------------------------------
+        Dim TestInit = Helper.BIN.ChromeDebugStringToByteArray(
+            "00000000: 0102 0304 0102 0304 0102 0304 0102 0304  ................" & vbCrLf & _
+            "00000001: 0001 0000 00                             .....")
+        Dim DataInit(20) As Byte : SEC.Nonce.CopyTo(DataInit, 0) : DataInit(17) = 1
+        Helper.BIN.PrettyPrint(TestInit, "TestInit")
+        Helper.BIN.PrettyPrint(DataInit, "DataInit")
+
+        ' ---------------------------------------------------------
+        ' Datenübertragung - Fehler (Länge falsch) - 4 Bytes OK?
+        ' ---------------------------------------------------------
+        Dim TestData = Helper.BIN.ChromeDebugStringToByteArray(
+            "00000000: 1690 353d 36d2 ae09 2ce1 b703 1847 7503  ..5=6...,....Gu." & vbCrLf & _
+            "00000001: be3e c6f5 d5                             .>...")
+        Dim Data As Byte() = Helper.BIN.AppendLastByte(My.Computer.FileSystem.ReadAllBytes(Filename), 2)
+        Dim DataENC As Byte() = Crypto.AES_GCM.EncryptWithKey(Data, HKDFKey, NonceBase)
+        Helper.BIN.PrettyPrint(TestData, "Test-Data")
+        Helper.BIN.PrettyPrint(DataENC, "Org-Data")
+        Helper.BIN.PrettyPrint(Crypto.AES_GCM.DecryptWithKey(Helper.BIN.CombineBytes(NonceBase, TestData), HKDFKey, 0), "Test-Data")
+        Helper.BIN.PrettyPrint(Crypto.AES_GCM.DecryptWithKey(Helper.BIN.CombineBytes(NonceBase, DataENC), HKDFKey, 0), "Orig-Deco")
+
+
+        ' ---------------------------------------------------------
+        ' Datenübertragung beenden
+        ' ---------------------------------------------------------
+        Dim DataEnd(0) As Byte
+
+        ' ---------------------------------------------------------
+        ' Test der Datensendung
+        ' ---------------------------------------------------------
+
+        CLI1.SendBin(DataInit) '                                                Nonce Senden (21 Bytes)
+        CLI1.SendBin(DataENC) '                                                 Daten Senden (21 Bytes)
+        CLI1.SendBin(DataEnd) '                                                 Ende  Senden (1 Byte)
+
+        Threading.Thread.Sleep(2000) '                                          Let the Server work
+        Dim Stat As String = CLI1.ReadText '                                    Status auslesen
+        Console.WriteLine(Stat) '                                               Status ausgeben
+
+        Dim TargetURL As String = ("https://send.firefox.com/download/" & TUrl & "/#" & Helper.B64.unpadded_urlsafe_b64encodeB(SEC.RawSecret))
+        Console.WriteLine(TargetURL & " copied to Clipboard") : My.Computer.Clipboard.SetText(TargetURL)
+        Return TargetURL
     End Function
-
     Public Function ExtractLink(ByVal URL As String)
+        If IsNothing(URL) Then Return Nothing
         Return System.Text.RegularExpressions.Regex.Match(URL, "download/(.*?)/").Groups(1).Value
     End Function
-
-    Public Class SecretKeys
-        Public secretKey
-        Public newAuthKey
-        Public encryptKey
-        Public encryptIV
+    Public Class KeyRing
+        Public RawSecret As Byte()
+        Public Nonce As Byte()
+        Public encrKey
         Public password As String
         Public authKey
         Public metaKey
         Public url As String
-        Public metaIV(11) As Byte ' Firefox-Send verwendet einen 12 byte Null IV beim verschlüsseln der Metadaten
+
+        Public EmptyIV12(11) As Byte '  Eine leere (12 * 0) Nonce
 
         Sub New(ByVal _secretKey As Byte(), ByVal _password As String, ByVal _url As String)
-            secretKey = Crypto.RNG.RandomSecretKey(16) : If Not IsNothing(_secretKey) Then secretKey = _secretKey
-            encryptKey = deriveEncryptKey()
-            encryptIV = Crypto.RNG.RandomSecretKey(12)
-            authKey = deriveAuthKey()
-            metaKey = deriveMetaKey()
+            ' ----------------------------------------------------
+            ' 16-Bit kryptografischen Schlüssel erzeugen
+            ' ----------------------------------------------------
+            RawSecret = _secretKey ' Für Testfunktionen
+            If IsNothing(_secretKey) Then RawSecret = Crypto.RNG.RandomSecretKey(16)
+
+            ' ---------------------------------------------------
+            ' 16 Bytes Salt (Nonce) erzeugen
+            ' ---------------------------------------------------
+            Nonce = Crypto.RNG.RandomSecretKey(16)
+            Nonce = Convert.FromBase64String("yRCdyQ1EMSA3mo4rqSkuNQ==") ' {201,16,157,201,13,68,49,32,55,154,142,43,169,41,46,53}
+
+            Dim TestValues As Boolean = False
+            If TestValues = True Then
+                RawSecret = Crypto.RNG.TestingSecretKey() ' {1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8}
+                Nonce = Crypto.RNG.TestingNonceIV() '       {1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4}
+            End If
+
+            authKey = deriveAuthKey() '                  64 Bytes => Mit Testdaten => 6  , 54,  248, 23, 110, 40, 179, 42,  240, 186, 239, 51, 121, 25, 92, 209, ... (LEN64)
+            metaKey = deriveMetaKey() '                  16 Bytes => Mit Testdaten => 161, 119, 214, 11, 125, 70, 89,  105, 72,  44,  58,  40, 173, 3,  56, 118      (LEN16)
+            encrKey = deriveEncrKey() '                  16 Bytes => Mit Testdaten => 
+
             password = _password
-            newAuthKey = deriveNewAuthKey(_password, _url)
-            ' metaIV(11) as byte ' = bytes(12) # 
+
         End Sub
 
-        Function deriveEncryptKey()
-            Dim Salt(0) As Byte
-            Dim HKDF As New Crypto.HKDF()
-            Return HKDF.DeriveKey(Salt, secretKey, System.Text.Encoding.UTF8.GetBytes("encryption"), 16)
+        Function deriveEncrKey()
+            Return New Crypto.HKDF().deriveKey(RawSecret, Nonce, "deriveKey", 16)
         End Function
         Function deriveAuthKey()
-            Dim Salt(0) As Byte
-            Dim HKDF As New Crypto.HKDF()
-            Return HKDF.DeriveKey(Salt, secretKey, System.Text.Encoding.UTF8.GetBytes("authentication"), 64)
+            Return New Crypto.HKDF().deriveKey(RawSecret, Nothing, "authentication", 64)
         End Function
         Function deriveMetaKey()
-            Dim Salt(0) As Byte
-            Dim HKDF As New Crypto.HKDF()
-            Return HKDF.DeriveKey(Salt, secretKey, System.Text.Encoding.UTF8.GetBytes("metadata"), 16)
-        End Function
-        Function deriveNewAuthKey(ByVal password As String, ByVal _url As String) As Byte()
-            Dim PassArr = System.Text.Encoding.UTF8.GetBytes(password)
-            Dim URLArr = System.Text.Encoding.UTF8.GetBytes(_url)
-            Dim HMAC_SHA256 = HMAC.Create() : HMAC_SHA256.ComputeHash(PassArr)
-            Dim NewAuthKey = Crypto.PBKDF2.PBKDF2(password, URLArr, 100, 64)
-            Return NewAuthKey
+            Return New Crypto.HKDF().deriveKey(RawSecret, Nothing, "metadata", 16)
         End Function
 
-        Public Sub PrintSecrets()
-            Console.WriteLine(url)
-            Console.WriteLine(password)
-            Console.WriteLine("ExampleKey:" & "qCHwlxOiPcvDPfyJ7cmPZg")
-            Console.WriteLine("SecretKey_:" & B64.unpadded_urlsafe_b64encodeB(secretKey))
-            Console.WriteLine("NewAuthKey:" & B64.unpadded_urlsafe_b64encodeB(newAuthKey))
-            Console.WriteLine("EncryptKey:" & B64.unpadded_urlsafe_b64encodeB(encryptKey))
-            Console.WriteLine("EncryptIV_:" & B64.unpadded_urlsafe_b64encodeB(encryptIV))
-            Console.WriteLine("AuthKey___:" & B64.unpadded_urlsafe_b64encodeB(authKey))
-            Console.WriteLine("MetaKey___:" & B64.unpadded_urlsafe_b64encodeB(metaKey))
-            Console.WriteLine("MetaIV____:" & B64.unpadded_urlsafe_b64encodeB(metaIV))
+        Function EncryptFileData(FileData) As Byte()
+
+            '59, 39, 82, 45, 36, 200, 58, 81, 20, 24, 36, 30, 252, 36, 173, 65, 118, 116, 231, 27, 180  (Len:21)
+            '00000000: 3b27 522d 24c8 3a51 1418 241e fc24 ad41  ;'R-$.:Q..$..$.A
+            '00000001: 7674 e71b b4                             vt...
+
+            Dim Crypt As Byte() = Crypto.AES_GCM.EncryptWithKey(FileData, encrKey, Nonce)
+            Dim Test1 As Byte() = Helper.BIN.PythonByteStringToByteArray("3b27522d24c83a511418241efc24ad417674e71bb4") ' 42 Bytes
+
+            Return Crypt
+        End Function
+        Function EncryptMetaData(MetaData)
+            ' ----------------------------------------------------
+            ' Diese Funktion liefert das korrekte Ergebnis zurück!
+            ' ----------------------------------------------------
+            Dim Text As String = ("{""name"":""Test.txt"",""size"":4,""type"":""text/plain"",""manifest"":{""files"":[{""name"":""Test.txt"",""size"":4,""type"":""text/plain""}]}}")
+            Dim BText = Helper.UTF.UTF8GetBytes(Text)
+            Dim Crypt As Byte() = Crypto.AES_GCM.EncryptWithKey(BText, metaKey, EmptyIV12)
+            Return Crypt
+        End Function
+        Function AuthKeyB64() As String
+            ' ----------------------------------------------------
+            ' Diese Funktion liefert das korrekte Ergebnis zurück!
+            ' ----------------------------------------------------
+            Dim RES = Helper.B64.unpadded_urlsafe_b64encodeB(authKey)
+            Return RES
+        End Function
+    End Class
+
+    Public Class Internal
+        Sub Tests()
+            ' -------------------------------------------------------------------------------------------------
+            ' Base64 + Hex De/Encoding von Python-String im Modus URLSafe und unpadded ('==' am ende)
+            ' -------------------------------------------------------------------------------------------------
+            Dim BS1 = Helper.BIN.PythonByteStringToByteArray("\xdf\xd1\x0b\xed+\xaa\xc1cX{\x82\x12\x97c4\xea")
+            Dim BH1 = Helper.HEX.ByteArrayToHexString(BS1)
+            Dim BB1 = Helper.B64.unpadded_urlsafe_b64encodeB(BS1)
+            If BB1 <> "39EL7SuqwWNYe4ISl2M06g" Then Console.WriteLine("Fehler")
+            Dim BB2 = Helper.B64.unpadded_urlsafe_b64decodeB(BB1)
+            Dim BH2 = Helper.HEX.ByteArrayToHexString(BB2)
+            If BH1 <> BH2 Then Console.WriteLine("Fehler")
+
+            ' -------------------------------------------------------------------------------------------------
+            ' Encryption AES256 GCM
+            ' -------------------------------------------------------------------------------------------------
+            Dim S1 = "Hallo"
+            Dim K1 = Crypto.RNG.RandomSecretKey(16)
+            Dim K2 = Crypto.RNG.RandomSecretKey(12)
+            Dim B1 = Crypto.AES_GCM.EncryptWithKey(System.Text.Encoding.UTF8.GetBytes(S1), K1, K2)
+            Dim B0 = Crypto.AES_GCM.DecryptWithKey(B1, K1)
+            Dim S2 = System.Text.Encoding.UTF8.GetString(B0)
+
+            ' -------------------------------------------------------------------------------------------------
+            ' Secret Keys (ehuggett/send-cli)
+            ' -------------------------------------------------------------------------------------------------
+            '# test data was obtained by adding debug messages to {"commit":"188b28f","source":"https://github.com/mozilla/send/","version":"v1.2.4"}
+            Dim testdata As New Dictionary(Of String, Object)
+            testdata.Add("secretKey", Helper.BIN.PythonByteStringToByteArray("q\xd94B\xa1&\x03\xa5<8\xddk\xee.\xea&"))
+            testdata.Add("encryptKey", Helper.BIN.PythonByteStringToByteArray("\xc4\x979\xaa\r\n\xeb\xc7\xa16\xa4%\xfd\xa6\x91\t"))
+            testdata.Add("authKey", Helper.BIN.PythonByteStringToByteArray("5\xa0@\xef\xd0}f\xc7o{S\x05\xe4,\xe1\xe4\xc2\x8cE\xa1\xfat\xc1\x11\x94e[L\x89%\xf5\x8b\xfc\xb5\x9b\x87\x9a\xf2\xc3\x0eKt\xdeL\xab\xa4\xa6%t\xa6""4\r\x07\xb3\xf5\xf6\xb9\xec\xcc\x08\x80}\xea"))
+            testdata.Add("metaKey", Helper.BIN.PythonByteStringToByteArray("\xd5\x9dF\x05\x86\x1a\xfdi\xaeK+\xe7\x8e\x7f\xf2\xfd"))
+            testdata.Add("password", "drowssap")
+            testdata.Add("url", "http://192.168.254.87:1443/download/fa4cd959de/#cdk0QqEmA6U8ON1r7i7qJg")
+            testdata.Add("newAuthKey", Helper.BIN.PythonByteStringToByteArray("U\x02F\x19\x1b\xc1W\x03q\x86q\xbc\xe7\x84WB\xa7(\x0f\x8a\x0f\x17\\\xb9y\xfaZT\xc1\xbf\xb2\xd48\x82\xa7\t\x9a\xb1\x1e{cg\n\xc6\x995+\x0f\xd3\xf4\xb3kd\x93D\xca\xf9\xa1(\xdf\xcb_^\xa3"))
+
+            '# generate all keys
+            Dim keys = New KeyRing(testdata("secretKey"), testdata("password"), testdata("url"))
+
+            '# Check every key has the expected value
+            Console.WriteLine(Helper.BIN.ByteCompare(testdata("secretKey"), keys.RawSecret))
+            Console.WriteLine(Helper.BIN.ByteCompare(testdata("encryptKey"), keys.encrKey))
+            Console.WriteLine(Helper.BIN.ByteCompare(testdata("authKey"), keys.authKey))
+            Console.WriteLine(Helper.BIN.ByteCompare(testdata("metaKey"), keys.metaKey))
+            Console.WriteLine(Helper.BIN.ByteCompare(testdata("password"), keys.password))
+
         End Sub
     End Class
 End Class
 
-Class B64
-    <DebuggerStepThrough()>
-    Public Shared Function unpadded_urlsafe_b64encodeB(ByVal B As Byte()) As String
-        ' Kopie der Python urlsafe_b64encode(b) Funktion
-        Return Convert.ToBase64String(B).Replace("+", "-").Replace("/", "_").Replace("=", "")
-    End Function
-    <DebuggerStepThrough()>
-    Public Shared Function unpadded_urlsafe_b64decodeB(ByVal B As String) As Byte()
-        ' Kopie der Python urlsafe_b64decode(s) Funktion
-        Return Convert.FromBase64String(B.Replace("-", "+").Replace("_", "/") & IIf(B.Length Mod 4 = 0, "", Space(4 - B.Length Mod 4).Replace(" ", "=")))
-    End Function
-End Class
-Class HEX
-    <DebuggerStepThrough()>
-    Shared Function HexValueFromByteRange(ByVal Bytes As Byte(), ByVal Index As Integer, ByVal Length As Integer) As String
-        Return HEX.HexBytes(BIN.GetByteRange(Bytes, Index, Length))
-    End Function
-    <DebuggerStepThrough()>
-    Public Shared Function HexStringToByteArray(ByVal hex As String) As Byte()
-        Return Enumerable.Range(0, hex.Length).Where(Function(x) x Mod 2 = 0).[Select](Function(x) Convert.ToByte(hex.Substring(x, 2), 16)).ToArray()
-    End Function
-    <DebuggerStepThrough()>
-    Public Shared Function ByteArrayToHexString(ByVal ba As Byte()) As String
-        Return BitConverter.ToString(ba).Replace("-", "").ToLower
-    End Function
-    <DebuggerStepThrough()>
-    Public Shared Function HexBytes(ByVal ba As Byte()) As String
-        Dim Builder As New StringBuilder
-        For Each Hex As Byte In ba
-            Builder.Append(Hex.ToString("x2"))
-        Next
-        Return Builder.ToString()
-    End Function
-End Class
-Class JSON
-    Public Shared Function StringDictionaryToJSON(ByVal Dict As Dictionary(Of String, Object)) As String
-        Return Newtonsoft.Json.JsonConvert.SerializeObject(Dict, Newtonsoft.Json.Formatting.None)
-    End Function
-    Public Shared Function StringDictionaryToJSON(ByVal Dict As Dictionary(Of String, String)) As String
-        Return Newtonsoft.Json.JsonConvert.SerializeObject(Dict, Newtonsoft.Json.Formatting.None)
-    End Function
-End Class
-Class BIN
-    <DebuggerStepThrough()>
-    Shared Function CombineBytes(ByVal Array1 As Byte(), ByVal Array2 As Byte()) As Byte()
-        Dim MS As New MemoryStream
-        MS.Write(Array1, 0, Array1.Length)
-        MS.Write(Array2, 0, Array2.Length)
-        Return MS.ToArray
-    End Function
-    <DebuggerStepThrough()>
-    Shared Function IntToBitString(ByVal Number As Integer, ByVal Bits As Int16) As String
-        Dim OPCODE As String = ""
-        For i As Integer = Bits - 1 To 0 Step -1
-            Dim Val As Integer = 2 ^ i
-            If Number >= Val Then
-                Number -= Val
-                OPCODE = OPCODE & 1
-            Else
-                OPCODE = OPCODE & 0
-            End If
-        Next
-        Return OPCODE
-    End Function
-    <DebuggerStepThrough()>
-    Shared Function BytesToBitString(ByVal Bytes As Byte()) As String
-        Dim OUT As New System.Text.StringBuilder
-        Dim Bits = New BitArray(Bytes.Reverse.ToArray)
-        For i As Integer = 0 To Bits.Length - 1
-            OUT.Insert(0, IIf(Bits(i) = False, 0, 1))
-        Next
-        Return OUT.ToString
-    End Function
-    <DebuggerStepThrough()>
-    Shared Function ByteArrayToInteger(ByVal B() As Byte) As Double
-        Dim RES As Double = 0
-        For i As Integer = 0 To B.Count - 1
-            Dim i2 As Integer = B.Count - i - 1
-            Dim Shift As Long = CLng(B(i)) << (i2 * 8)
-            RES = RES + Shift
-        Next
-        Return RES
-    End Function
-    <DebuggerStepThrough()>
-    Shared Function HexStringToDouble(ByVal Hex As String) As Double
-        Return Integer.Parse(Hex, Globalization.NumberStyles.HexNumber)
-    End Function
-    <DebuggerStepThrough()>
-    Shared Function DoubleToHexString(ByVal Value As Integer) As String
-        Return Value.ToString("X")
-    End Function
-    <DebuggerStepThrough()>
-    Shared Function IntegerFromByteRange(ByVal Bytes As Byte(), ByVal Index As Integer, ByVal Length As Integer) As Integer
-        Return BIN.ByteArrayToInteger(BIN.GetByteRange(Bytes, Index, Length))
-    End Function
-    <DebuggerStepThrough()>
-    Shared Function BitStringFromByteRange(ByVal Bytes As Byte(), ByVal Index As Integer, ByVal Length As Integer) As String
-        Return BIN.BytesToBitString(BIN.GetByteRange(Bytes, Index, Length))
-    End Function
+
+
+Public Class SOC_SEC_Client
+    Dim _URL As String
+    Dim SS As SslStream
+    Dim TC As TcpClient
+    Dim NS As NetworkStream
+    Dim _MSG As WEB_Message
+    Dim _CKEY As String = SOC_Shared.CreateSocketKey()
+    Dim _AKEY As String
+
+    Property Connected As Boolean = False
+
+    Event ReceivedData(Text As String, Client As SOC_SEC_Client)
+    Event Disconnected()
 
     <DebuggerStepThrough()>
-    Shared Function UShortToByteArray(ByVal Number As UShort) As Byte()
-        Return BitConverter.GetBytes(CUShort(Number)).Reverse.ToArray ' 2 Bytes Short Little Endian
-    End Function
-    <DebuggerStepThrough()> _
-    Shared Function BinaryFindFirst(ByVal Array As Byte(), ByVal Text As String) As Integer
-        Dim PatCHK As Byte() = System.Text.Encoding.UTF8.GetBytes(Text)
-        Dim FByte As Byte = PatCHK(0)
-        Dim LastPos As Integer = System.Array.IndexOf(Array, FByte)
-        Do
-            If LastPos = -1 Then Return LastPos
-            If LastPos + PatCHK.Length > Array.Length Then Return -1
-            Dim PatOrg(Text.Length - 1) As Byte : System.Array.Copy(Array, LastPos, PatOrg, 0, Text.Length)
-            If PatOrg.SequenceEqual(PatCHK) Then : Return LastPos
-            Else : LastPos = System.Array.IndexOf(Array, FByte, LastPos + 1)
-            End If
-        Loop
-        Return -1
-    End Function
-    <DebuggerStepThrough()> _
-    Shared Function BinaryFindNext(ByVal Array As Byte(), ByVal StartIndex As Integer, ByVal Text As String) As Integer
-        Dim PatCHK As Byte() = System.Text.Encoding.UTF8.GetBytes(Text)
-        Dim FByte As Byte = PatCHK(0) ' FirstByte
-        Dim LastPos As Integer = System.Array.IndexOf(Array, FByte, StartIndex)
-        Do
-
-            If LastPos = -1 Then Return -1 '                            Not found
-            If LastPos + PatCHK.Length > Array.Length Then Return -1 '  Not found
-
-            Dim PatOrg(Text.Length - 1) As Byte : System.Array.Copy(Array, LastPos, PatOrg, 0, Text.Length)
-            If PatOrg.SequenceEqual(PatCHK) Then : Return LastPos
-            Else : LastPos = System.Array.IndexOf(Array, FByte, LastPos + 1)
-            End If
-        Loop
-        Return -1
+    Sub New(ByVal URL As String)
+        _URL = URL
+        Connect()
+    End Sub
+    <DebuggerStepThrough()>
+    Function CB1() As RemoteCertificateValidationCallback
+        Return Nothing
     End Function
     <DebuggerStepThrough()>
-    Shared Function BinaryFindLast(ByVal Array As Byte(), ByVal Text As String) As Integer
-        Dim PatCHK As Byte() = System.Text.Encoding.UTF8.GetBytes(Text)
-        Dim FByte As Byte = PatCHK(0)
-        Dim LastPos As Integer = System.Array.LastIndexOf(Array, FByte)
-        Do
-            If LastPos = -1 Then Return LastPos
-            If LastPos + PatCHK.Length > Array.Length Then LastPos = System.Array.LastIndexOf(Array, FByte, LastPos - 1) : Continue Do
-            Dim PatOrg(Text.Length - 1) As Byte : System.Array.Copy(Array, LastPos, PatOrg, 0, Text.Length)
-            If PatOrg.SequenceEqual(PatCHK) Then : Return LastPos
-            Else : LastPos = System.Array.LastIndexOf(Array, FByte, LastPos - 1)
-            End If
-        Loop
-        Return -1
-    End Function
-    <DebuggerStepThrough()>
-    Public Shared Function GetByteRange(ByVal Bytes As Byte(), ByVal Index As Integer, Optional ByVal Count As Integer = -1) As Byte()
-        If Count = -1 Then Count = Bytes.Count - Index
-        Dim B2(Count - 1) As Byte
-        Array.Copy(Bytes, Index, B2, 0, Count)
-        Return B2
+    Function CB2() As LocalCertificateSelectionCallback
+        Return Nothing
     End Function
 
-    Public Shared Function ByteArrayToIntString(ByVal ba As Byte()) As String
-        Return String.Join(" ", ba)
+    Sub Connect()
+        If Connected = True Then Exit Sub
+        If _URL = "" Then Exit Sub
+        Dim URI As New Uri(_URL)
+        Dim IEP As IPEndPoint = Helper.IPV4.UrlToEndpoint(_URL)
+        Dim ITRY As Integer = 0
+
+        Dim WSUpgrade As New StringBuilder
+        WSUpgrade.AppendLine("GET " & URI.PathAndQuery & " HTTP/1.1")
+        WSUpgrade.AppendLine("Upgrade: WebSocket")
+        WSUpgrade.AppendLine("Connection: Upgrade")
+        WSUpgrade.AppendLine("Sec-WebSocket-Version: 13")
+        WSUpgrade.AppendLine("Sec-WebSocket-Key: " & _CKEY)
+        WSUpgrade.AppendLine("Host: " & URI.Host & ":" & URI.Port)
+        WSUpgrade.AppendLine()
+        Dim BWSUpgrade As Byte() = Encoding.UTF8.GetBytes(WSUpgrade.ToString)
+
+        Try
+            TC = New TcpClient(IEP.Address.ToString, URI.Port)
+            TC.SendTimeout = 2000 : TC.ReceiveTimeout = 2000
+            SS = New Security.SslStream(TC.GetStream, False, CB1, CB2)
+            NS = TC.GetStream
+
+            SS.AuthenticateAsClient(URI.DnsSafeHost, Nothing, System.Security.Authentication.SslProtocols.Default, False)
+            Threading.Thread.Sleep(400)
+            SS.Write(BWSUpgrade) : Dim DATA As New WEB_Message(ReadAsByteArray(TC, SS, True), True, Nothing)
+            Connected = True
+        Catch : End Try
+
+    End Sub
+
+    Sub SendText(ByVal Text As String)
+        If IsNothing(tc) Then Exit Sub
+        If Connected = False Then Connect()
+        If Connected = False Then Exit Sub
+        Try
+            Dim B As Byte()
+            B = SOC_Shared.MessageToByteArray(Text, 1)
+            SS.Write(B, 0, B.Length)
+        Catch ex As Exception
+            Connected = False
+        End Try
+    End Sub
+    Sub SendBin(ByVal Data As Byte())
+        If IsNothing(NS) Then Exit Sub
+        If Connected = False Then Connect()
+        If Connected = False Then Exit Sub
+        Try
+            Dim B As Byte()
+            B = SOC_Shared.DataToByteArray(Data, 1)
+            SS.Write(B, 0, B.Length)
+        Catch ex As Exception
+            Connected = False
+        End Try
+    End Sub
+
+    Function ReadText() As String
+        Return SOC_Shared.ByteArrayToMessage(ReadAsByteArray(TC, SS, True))
     End Function
-    Public Shared Function PythonByteStringToByteArray(ByVal Representation As String) As Byte()
-        Dim M1 As New MemoryStream(System.Text.Encoding.UTF8.GetBytes(Representation))
-        Dim HexB As Integer() = {48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102}
-        Dim B1 As New MemoryStream
-
-        ' TestSTR  = \xdf\xd1\x0b\xed+\xaa\xc1cX{\x82\x12\x97c4\xea
-        ' TestARR = 223, 209, 11, 237, 43, 170, 193, 99, 88, 123, 130, 18, 151, 99, 52, 234
-        ' TestHEX = 0xdf, 0xd1, 0xb, 0xed, 0x2b, 0xaa, 0xc1, 0x63, 0x58, 0x7b, 0x82, 0x12, 0x97, 0x63, 0x34, 0xea
-
-        Do Until M1.Position = M1.Length
-            Dim P1 As Byte = M1.ReadByte
-            If P1 = 92 Then ' /
-                Dim P2 As Byte = M1.ReadByte()
-                Select Case P2
-                    Case 120
-                        Dim BA As New List(Of Byte)
-                        Do
-                            Dim B1X = M1.ReadByte
-                            If HexB.Contains(B1X) = True Then
-                                BA.Add(B1X)
-                                If BA.Count = 2 Then
-                                    Dim B1S = Chr(BA(0)) & Chr(BA(1)) : Console.WriteLine(B1S)
-                                    Dim num = Int32.Parse(B1S, System.Globalization.NumberStyles.HexNumber)
-                                    B1.WriteByte(num) : Exit Do
-                                End If
-                            End If
-                        Loop
-                    Case Asc("r")
-                        B1.WriteByte(13) ' CR
-                    Case Asc("n")
-                        B1.WriteByte(10) ' LF
-                    Case Asc("t")
-                        B1.WriteByte(9) ' Tab
-                    Case Else
-                        B1.WriteByte(92) ' /
-                End Select
-            Else
-                B1.WriteByte(P1)
-            End If
-        Loop
-
-        Return B1.ToArray
+    Function ReadData() As Byte()
+        Return ReadAsByteArray(TC, SS, True)
     End Function
-    Public Shared Function ByteCompare(ByVal Arr1 As Object, ByVal Arr2 As Object) As Boolean
-        If IsNothing(Arr1) Then Return False
-        If IsNothing(Arr2) Then Return False
 
-        Dim a As String = ""
-        If Arr1.GetType.ToString = "System.Byte[]" Then
-            a = String.Join(" ", CType(Arr1, System.Byte())) & vbCrLf & String.Join(" ", CType(Arr2, System.Byte()))
-        Else
-            a = Arr1 & vbCrLf & Arr2
+    Function ReadAsByteArray(ByVal Stream As TcpClient, ByVal Secure As SslStream, ByVal Wait As Boolean) As Byte()
+        If IsNothing(Stream) Then Return Nothing
+        If IsNothing(Secure) Then Return Nothing
+        If Wait = True Then Threading.Thread.Sleep(200)
+        If Stream.Available > IIf(Wait = True, -1, 0) Then
+            Dim B(Stream.Available - 1) As Byte : Secure.Read(B, 0, Stream.Available)
+            Return B
         End If
-
-        If Arr1.Length <> Arr2.Length Then Console.WriteLine(a) : Return False
-        For i As Integer = 0 To Arr1.Length - 1
-            If Arr1(i) <> Arr2(i) Then
-                Console.WriteLine(a) : Return False
-            End If
-        Next
-        Return True
+        Return Nothing
     End Function
+    Function ReadAsString(Stream As TcpClient, Secure As SslStream, Wait As Boolean) As String
+        Dim Target As Byte() = ReadAsByteArray(Stream, Secure, Wait)
+        If Not IsNothing(Target) Then Return System.Text.Encoding.UTF8.GetString(Target)
+        Return ""
+    End Function
+
+
 End Class
 
 Public Class SOC_Shared
-    <DebuggerStepThrough()>
+    '<DebuggerStepThrough()>
     Shared Function GetDataLength(ByVal Bytes As Byte()) As Integer
         Dim BOP As Byte = Bytes(1)  '            Länge und Mask f. Modifikation
         If BOP >= 128 Then BOP -= 128 '          Byte1 (128, MASK) entfernen wenn gesetzt
         If BOP < 126 Then Return BOP '           Länge steht in den letzten 7 Bytes von Byte1 (Max. 125, 126 und 127 haben Sonderfunktion)
-        If BOP = 126 And Bytes.Count > 3 Then Return BIN.ByteArrayToInteger({Bytes(2), Bytes(3)}.ToArray)
-        If BOP = 127 And Bytes.Count > 9 Then Return BIN.ByteArrayToInteger({Bytes(2), Bytes(3), Bytes(4), Bytes(5), Bytes(6), Bytes(7), Bytes(8), Bytes(9)}.ToArray)
+        If BOP = 126 And Bytes.Count > 3 Then Return Helper.BIN.ByteArrayToInteger({Bytes(2), Bytes(3)}.ToArray)
+        If BOP = 127 And Bytes.Count > 9 Then Return Helper.BIN.ByteArrayToInteger({Bytes(2), Bytes(3), Bytes(4), Bytes(5), Bytes(6), Bytes(7), Bytes(8), Bytes(9)}.ToArray)
         Return 0
     End Function
     <DebuggerStepThrough()>
@@ -385,6 +381,8 @@ Public Class SOC_Shared
     <DebuggerStepThrough()>
     Shared Function ResponseWebSocketAccept(ByVal KEY As String) As String
         Dim _WKEY As String = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        'Client-Sends:   szQ7F+ChCAL4ksP6wkNnhQ==  
+        'Server-Answer:  9A6HATB6GRtZdMfdErZcScGD6s8=
         Dim GES As String = KEY + _WKEY
         Dim GESB As Byte() = Text.Encoding.UTF8.GetBytes(GES)
         Dim SHA1 As Byte() = System.Security.Cryptography.SHA1.Create().ComputeHash(GESB)
@@ -472,11 +470,20 @@ Public Class SOC_Shared
         Next
         Return Message
     End Function
+
+    Shared Function PingMessage() As Byte()
+        Dim Ping() As Byte = {138, 128, 0, 0, 0, 0}
+        Return Ping
+    End Function
+    Shared Function PongMessage() As Byte()
+        Dim Pong() As Byte = {138, 128}
+        Return Helper.BIN.CombineBytes(Pong, SOC_Shared.CreateMaskingKey)
+    End Function
     Shared Function ByteArrayToMessage(ByVal Bytes() As Byte) As String
         If IsNothing(Bytes) Then Return Nothing
         If Bytes.Count = 0 Then Return Nothing
 
-        Dim BYTE1 As String = BIN.IntToBitString(Bytes(0), 8)
+        Dim BYTE1 As String = Helper.BIN.IntToBitString(Bytes(0), 8)
         Dim OPCODE As Integer = Bytes(0) << 4 >> 4 ' Bitshift um 4 nach rechts und zurück (löscht 1. 4 Bytes)
 
         Dim EOP1 As OPCodes = SOC_Shared.OpCodeDescription(OPCODE)
@@ -487,7 +494,7 @@ Public Class SOC_Shared
         End Select
 
         If Bytes.Length = 1 Then Return EOP1
-        Dim OPCODE2 As String = BIN.IntToBitString(Bytes(1), 8)
+        Dim OPCODE2 As String = Helper.BIN.IntToBitString(Bytes(1), 8)
         Dim MSK As Boolean = False  '            Maskierung Default
         Dim LEN As Integer = 0      '            Länge
         Dim SKP As Integer = 0      '            Skip Bytes
@@ -498,7 +505,7 @@ Public Class SOC_Shared
         LEN = SOC_Shared.GetDataLength(Bytes)
         If LEN = 0 Then Return ""
         If Bytes(1) >= 128 Then MSK = True
-        Dim DLEN As Integer = BIN.ByteArrayToInteger({Bytes(1)}) - IIf(MSK = True, 128, 0) ' Die Länge aus Byte0
+        Dim DLEN As Integer = Helper.BIN.ByteArrayToInteger({Bytes(1)}) - IIf(MSK = True, 128, 0) ' Die Länge aus Byte0
         If DLEN = 126 Then SKP = 2
         If DLEN = 127 Then SKP = 8
 
@@ -563,8 +570,8 @@ Public Class SOC_Shared
 
         Dim ResponseData As Byte() : ReDim ResponseData((2 + EXT + 4 + Payload.Length) - 1) '       Array vorbereiten
         Buffer.BlockCopy(BYTES, 0, ResponseData, 0, 2) '                                            Bytes anfügen
-        If EXT = 2 Then Buffer.BlockCopy(BIN.UShortToByteArray(L1), 0, ResponseData, 2, 2) ' Erweitern um 2 Bytes
-        If EXT = 8 Then Buffer.BlockCopy(BIN.UShortToByteArray(L1), 0, ResponseData, 2, 8) ' Erweitern um 8 Bytes
+        If EXT = 2 Then Buffer.BlockCopy(Helper.BIN.UShortToByteArray(L1), 0, ResponseData, 2, 2) ' Erweitern um 2 Bytes
+        If EXT = 8 Then Buffer.BlockCopy(Helper.BIN.UShortToByteArray(L1), 0, ResponseData, 2, 8) ' Erweitern um 8 Bytes
         Buffer.BlockCopy(MASK, 0, ResponseData, 2 + EXT, MASK.Length) '                             Maskierung anfügen
         Buffer.BlockCopy(Payload, 0, ResponseData, 2 + EXT + IIf(EncodeMask = True, 4, 0), Payload.Length) '         Payload anfügen
         Return ResponseData
@@ -613,317 +620,12 @@ Public Class SOC_Shared
 
         Dim ResponseData As Byte() : ReDim ResponseData((2 + EXT + 4 + Payload.Length) - 1) '       Array vorbereiten
         Buffer.BlockCopy(BYTES, 0, ResponseData, 0, 2) '                                            Bytes anfügen
-        If EXT = 2 Then Buffer.BlockCopy(BIN.UShortToByteArray(L1), 0, ResponseData, 2, 2) '        Erweitern um 2 Bytes
-        If EXT = 8 Then Buffer.BlockCopy(BIN.UShortToByteArray(L1), 0, ResponseData, 2, 8) '        Erweitern um 8 Bytes
+        If EXT = 2 Then Buffer.BlockCopy(Helper.BIN.UShortToByteArray(L1), 0, ResponseData, 2, 2) ' Erweitern um 2 Bytes
+        If EXT = 8 Then Buffer.BlockCopy(Helper.BIN.UShortToByteArray(L1), 0, ResponseData, 2, 8) ' Erweitern um 8 Bytes
         Buffer.BlockCopy(MASK, 0, ResponseData, 2 + EXT, MASK.Length) '                             Maskierung anfügen
         Buffer.BlockCopy(Payload, 0, ResponseData, 2 + EXT + IIf(EncodeMask = True, 4, 0), Payload.Length) '         Payload anfügen
         Return ResponseData
 
     End Function
 
-End Class
-
-
-Public Class SOC_SEC_Client
-    Dim _URL As String
-    Dim SS As SslStream
-    Dim TC As TcpClient
-    Dim NS As NetworkStream
-    Dim _CKEY As String = SOC_Shared.CreateSocketKey()
-    Dim _AKEY As String
-
-    Property Connected As Boolean = False
-
-    Event ReceivedData(Text As String, Client As SOC_SEC_Client)
-    Event Disconnected()
-
-    <DebuggerStepThrough()>
-    Sub New(ByVal URL As String)
-        _URL = URL
-    End Sub
-    <DebuggerStepThrough()>
-    Function CB1() As RemoteCertificateValidationCallback
-        Return Nothing
-    End Function
-    <DebuggerStepThrough()>
-    Function CB2() As LocalCertificateSelectionCallback
-        Return Nothing
-    End Function
-
-    <DebuggerStepThrough()>
-    Shared Function UrlToEndpoint(ByVal Url As String) As Net.IPEndPoint
-        Try
-            If Url = "" Then Return Nothing
-            Dim URI = New Uri(Url)
-            If Text.RegularExpressions.Regex.IsMatch(URI.DnsSafeHost, "[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}") Then
-                Return New IPEndPoint(IPAddress.Parse(URI.DnsSafeHost), URI.Port)
-            End If
-            Dim IPHE As IPHostEntry = Dns.GetHostEntry(URI.DnsSafeHost)
-            Dim IPEP As New IPEndPoint(GetV4IP(IPHE.AddressList), URI.Port)
-            Return IPEP
-        Catch ex As Exception
-
-        End Try
-        Return Nothing
-    End Function
-    <DebuggerStepThrough()>
-    Shared Function GetV4IP(ByVal List As Object) As System.Net.IPAddress
-        For Each eintrag In List
-            If eintrag.addressfamily = AddressFamily.InterNetwork Then
-                Return eintrag
-            End If
-        Next
-        Return Nothing
-    End Function
-
-    Sub Connect()
-        If _URL = "" Then Exit Sub
-        Dim URI As New Uri(_URL)
-        Dim IEP As IPEndPoint = UrlToEndpoint(_URL)
-        Dim ITRY As Integer = 0
-
-        Dim WSUpgrade As New StringBuilder
-        WSUpgrade.AppendLine("GET " & URI.PathAndQuery & " HTTP/1.1")
-        WSUpgrade.AppendLine("Upgrade: WebSocket")
-        WSUpgrade.AppendLine("Connection: Upgrade")
-        WSUpgrade.AppendLine("Sec-WebSocket-Version: 13")
-        WSUpgrade.AppendLine("Sec-WebSocket-Key: " & _CKEY)
-        WSUpgrade.AppendLine("Host: " & URI.Host & ":" & URI.Port)
-        WSUpgrade.AppendLine()
-        Dim BWSUpgrade As Byte() = Encoding.UTF8.GetBytes(WSUpgrade.ToString)
-
-        Try
-            TC = New TcpClient(IEP.Address.ToString, URI.Port)
-            TC.SendTimeout = 2000 : TC.ReceiveTimeout = 2000
-            SS = New Security.SslStream(TC.GetStream, False, CB1, CB2)
-            NS = TC.GetStream
-
-            SS.AuthenticateAsClient(URI.DnsSafeHost, Nothing, System.Security.Authentication.SslProtocols.Default, False) : Threading.Thread.Sleep(200)
-            SS.Write(BWSUpgrade) : Dim DATA = System.Text.Encoding.UTF8.GetString(ReadAsByteArray(TC, SS, True)) : Console.WriteLine(DATA)
-            Connected = True
-        Catch : End Try
-
-    End Sub
-
-    Sub SendText(ByVal Text As String)
-        If IsNothing(TC) Then Exit Sub
-        If Connected = False Then Connect()
-        If Connected = False Then Exit Sub
-        Try
-            Dim B As Byte()
-            B = SOC_Shared.MessageToByteArray(Text, 1)
-            SS.Write(B, 0, B.Length)
-        Catch ex As Exception
-            Connected = False
-        End Try
-    End Sub
-    Sub SendBin(ByVal Data As Byte())
-        If IsNothing(NS) Then Exit Sub
-        If Connected = False Then Connect()
-        If Connected = False Then Exit Sub
-        Try
-            Dim B As Byte()
-            B = SOC_Shared.DataToByteArray(Data, 1)
-            SS.Write(B, 0, B.Length)
-        Catch ex As Exception
-            Connected = False
-        End Try
-    End Sub
-
-    Function ReadText() As String
-        Return SOC_Shared.ByteArrayToMessage(ReadAsByteArray(TC, SS, True))
-    End Function
-    Function ReadData() As Byte()
-        Return ReadAsByteArray(TC, SS, True)
-    End Function
-
-    Function ReadAsByteArray(Stream As TcpClient, Secure As SslStream, Wait As Boolean) As Byte()
-        If Wait = True Then Threading.Thread.Sleep(200)
-        If Stream.Available > IIf(Wait = True, -1, 0) Then
-            Dim B(Stream.Available - 1) As Byte : Secure.Read(B, 0, Stream.Available)
-            Return B
-        End If
-        Return Nothing
-    End Function
-    Function ReadAsString(Stream As TcpClient, Secure As SslStream, Wait As Boolean) As String
-        Dim Target As Byte() = ReadAsByteArray(Stream, Secure, Wait)
-        If Not IsNothing(Target) Then Return System.Text.Encoding.UTF8.GetString(Target)
-        Return ""
-    End Function
-End Class
-
-Public Class Crypto
-    Class RNG
-        Public Shared Function RandomSecretKey(ByVal Length As Integer) As Byte()
-            Dim Sec = System.Security.Cryptography.RNGCryptoServiceProvider.Create()
-            Dim Bin(Length - 1) As Byte : Sec.GetNonZeroBytes(Bin)
-            Return Bin
-        End Function
-    End Class
-    Class MD5
-        Public Shared Function MD5Hash(ByVal BY As Byte()) As Byte()
-            Dim MD5 As New MD5CryptoServiceProvider
-            Return MD5.ComputeHash(BY)
-        End Function
-    End Class
-    Class PBKDF2
-        Public Shared Function PBKDF2(ByVal Input As String, ByVal Salt As Byte(), ByVal Iterations As Integer, ByVal Hash_Size As Integer)
-            If IsNothing(Salt) Then Salt = New Byte() {0, 0, 0, 0, 0, 0, 0, 0}
-            Dim RES As New Rfc2898DeriveBytes(Input, Salt, Iterations)
-            Return RES.GetBytes(Hash_Size)
-        End Function
-    End Class
-    Class HKDF
-        Private keyedHash As Func(Of Byte(), Byte(), Byte())
-        Public Sub New()
-            Dim hmac = New HMACSHA256()
-            keyedHash = Function(key, message)
-                            hmac.Key = key
-                            Return hmac.ComputeHash(message)
-                        End Function
-        End Sub
-        Public Function Extract(ByVal salt As Byte(), ByVal inputKeyMaterial As Byte()) As Byte()
-            Return keyedHash(salt, inputKeyMaterial)
-        End Function
-        Public Function Expand(ByVal prk As Byte(), ByVal info As Byte(), ByVal outputLength As Integer) As Byte()
-            Dim resultBlock = New Byte(-1) {}
-            Dim result = New Byte(outputLength - 1) {}
-            Dim bytesRemaining = outputLength
-            Dim i As Integer = 1
-
-            While bytesRemaining > 0
-                Dim currentInfo = New Byte(resultBlock.Length + info.Length + 1 - 1) {}
-                Array.Copy(resultBlock, 0, currentInfo, 0, resultBlock.Length)
-                Array.Copy(info, 0, currentInfo, resultBlock.Length, info.Length)
-                currentInfo(currentInfo.Length - 1) = CByte(i)
-                resultBlock = keyedHash(prk, currentInfo)
-                Array.Copy(resultBlock, 0, result, outputLength - bytesRemaining, Math.Min(resultBlock.Length, bytesRemaining))
-                bytesRemaining -= resultBlock.Length
-                i += 1
-            End While
-
-            Return result
-        End Function
-        Public Function DeriveKey(ByVal salt As Byte(), ByVal inputKeyMaterial As Byte(), ByVal info As Byte(), ByVal outputLength As Integer) As Byte()
-            Dim prk = Extract(salt, inputKeyMaterial)
-            Dim result = Expand(prk, info, outputLength)
-            Return result
-        End Function
-
-        Public Sub Test()
-            Dim hkdf = New HKDF()
-
-            If True Then
-                Dim ikm = HEX.HexStringToByteArray("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
-                Dim salt = HEX.HexStringToByteArray("000102030405060708090a0b0c")
-                Dim info = HEX.HexStringToByteArray("f0f1f2f3f4f5f6f7f8f9")
-                Dim L = 42
-                Dim prk = "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5"
-                Dim okm = "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
-                Dim actualPrk = HEX.ByteArrayToHexString(hkdf.Extract(salt, ikm))
-                Dim actualOkm = HEX.ByteArrayToHexString(hkdf.DeriveKey(salt, ikm, info, L))
-                If prk = actualPrk Then Console.WriteLine("PRKL42 - OK")
-                If okm = actualOkm Then Console.WriteLine("PRKL42 - OK")
-            End If
-
-            If True Then
-                Dim ikm = HEX.HexStringToByteArray("000102030405060708090a0b0c0d0e0f" +
-                                            "101112131415161718191a1b1c1d1e1f" +
-                                            "202122232425262728292a2b2c2d2e2f" +
-                                            "303132333435363738393a3b3c3d3e3f" +
-                                            "404142434445464748494a4b4c4d4e4f")
-
-                Dim salt = HEX.HexStringToByteArray("606162636465666768696a6b6c6d6e6f" +
-                                             "707172737475767778797a7b7c7d7e7f" +
-                                             "808182838485868788898a8b8c8d8e8f" +
-                                             "909192939495969798999a9b9c9d9e9f" +
-                                             "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf")
-                Dim info = HEX.HexStringToByteArray("b0b1b2b3b4b5b6b7b8b9babbbcbdbebf" +
-                                             "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf" +
-                                             "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf" +
-                                             "e0e1e2e3e4e5e6e7e8e9eaebecedeeef" +
-                                             "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff")
-                Dim L = 82
-                Dim prk = "06a6b88c5853361a06104c9ceb35b45cef760014904671014a193f40c15fc244"
-                Dim okm = "b11e398dc80327a1c8e7f78c596a4934" +
-                          "4f012eda2d4efad8a050cc4c19afa97c" +
-                          "59045a99cac7827271cb41c65e590e09" +
-                          "da3275600c2f09b8367793a9aca3db71" +
-                          "cc30c58179ec3e87c14c01d5c1f3434f" +
-                          "1d87"
-
-                Dim actualPrk = HEX.ByteArrayToHexString(hkdf.Extract(salt, ikm))
-                Dim actualOkm = HEX.ByteArrayToHexString(hkdf.DeriveKey(salt, ikm, info, L))
-                If prk = actualPrk Then Console.WriteLine("PRKL82 - OK")
-                If okm = actualOkm Then Console.WriteLine("PRKL82 - OK")
-            End If
-
-            If True Then
-                Dim ikm = HEX.HexStringToByteArray("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")
-                Dim salt = New Byte(-1) {}
-                Dim info = New Byte(-1) {}
-                Dim L = 42
-                Dim prk = "19ef24a32c717b167f33a91d6f648bdf96596776afdb6377ac434c1c293ccb04"
-                Dim okm = "8da4e775a563c18f715f802a063c5a31" & "b8a11f5c5ee1879ec3454e5f3c738d2d" & "9d201395faa4b61a96c8"
-                Dim actualPrk = HEX.ByteArrayToHexString(hkdf.Extract(salt, ikm))
-                Dim actualOkm = HEX.ByteArrayToHexString(hkdf.DeriveKey(salt, ikm, info, L))
-                If prk = actualPrk Then Console.WriteLine("PRKL42_2 - OK")
-                If okm = actualOkm Then Console.WriteLine("PRKL42_2 - OK")
-            End If
-        End Sub
-    End Class
-    Class AES_GCM
-        Private Const KEY_BIT_SIZE = 16 * 8
-        Private Const MAC_BIT_SIZE = 128
-        Private Const NONCE_BIT_SIZE = 128
-
-        Public Shared Function EncryptWithKey(ByVal text As Byte(), ByVal key As Byte(), Optional ByVal nonSecretPayload As Byte() = Nothing) As Byte()
-            If key Is Nothing OrElse key.Length <> KEY_BIT_SIZE / 8 Then Throw New ArgumentException(String.Format("Key needs to be {0} bit!", KEY_BIT_SIZE), "key")
-            nonSecretPayload = If(nonSecretPayload, New Byte() {})
-            Dim nonce = New Byte(NONCE_BIT_SIZE / 8 - 1) {}
-            nonce = Crypto.RNG.RandomSecretKey(nonce.Length) ' Random.NextBytes(nonce, 0, nonce.Length)
-            Dim cipher = New GcmBlockCipher(New AesEngine())
-            Dim parameters = New AeadParameters(New KeyParameter(key), MAC_BIT_SIZE, nonce, nonSecretPayload)
-            cipher.Init(True, parameters)
-            Dim cipherText = New Byte(cipher.GetOutputSize(text.Length) - 1) {}
-            Dim len = cipher.ProcessBytes(text, 0, text.Length, cipherText, 0)
-            cipher.DoFinal(cipherText, len)
-
-            Using combinedStream = New MemoryStream()
-                Using binaryWriter = New BinaryWriter(combinedStream)
-                    binaryWriter.Write(nonSecretPayload)
-                    binaryWriter.Write(nonce)
-                    binaryWriter.Write(cipherText)
-                End Using
-
-                Return combinedStream.ToArray()
-            End Using
-        End Function
-        Public Shared Function DecryptWithKey(ByVal message As Byte(), ByVal key As Byte(), Optional ByVal nonSecretPayloadLength As Integer = 0) As Byte()
-            If key Is Nothing OrElse key.Length <> KEY_BIT_SIZE / 8 Then Throw New ArgumentException(String.Format("Key needs to be {0} bit!", KEY_BIT_SIZE), "key")
-            If message Is Nothing OrElse message.Length = 0 Then Throw New ArgumentException("Message required!", "message")
-
-            Using cipherStream = New MemoryStream(message)
-
-                Using cipherReader = New BinaryReader(cipherStream)
-                    Dim nonSecretPayload = cipherReader.ReadBytes(nonSecretPayloadLength)
-                    Dim nonce = cipherReader.ReadBytes(NONCE_BIT_SIZE / 8)
-                    Dim cipher = New GcmBlockCipher(New AesEngine())
-                    Dim parameters = New AeadParameters(New KeyParameter(key), MAC_BIT_SIZE, nonce, nonSecretPayload)
-                    cipher.Init(False, parameters)
-                    Dim cipherText = cipherReader.ReadBytes(message.Length - nonSecretPayloadLength - nonce.Length)
-                    Dim plainText = New Byte(cipher.GetOutputSize(cipherText.Length) - 1) {}
-
-                    Try
-                        Dim len = cipher.ProcessBytes(cipherText, 0, cipherText.Length, plainText, 0)
-                        cipher.DoFinal(plainText, len)
-                    Catch __unusedInvalidCipherTextException1__ As InvalidCipherTextException
-                        Return Nothing
-                    End Try
-
-                    Return plainText
-                End Using
-            End Using
-        End Function
-    End Class
 End Class
