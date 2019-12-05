@@ -15,4 +15,4 @@ of the own (simplest) Websocket implementation.
 The most knowledge comes from this github-project
 which is not working anymore (because of the socket
 communication instead of Ajax i think):
-https://github.com/shubzghadge/firefoxsenduploader
+https://github.com/nneonneo/ffsend
